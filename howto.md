@@ -18,7 +18,8 @@ It exists to solve four problems:
 4. Relay-owned cloud execution through runner processes.
 
 In practice that means the relay:
-- accepts Azure AD identity and exchanges it for relay-issued runtime tokens
+- runs a relay-owned OAuth flow that delegates upstream login to Azure AD
+- exchanges the upstream identity result for relay-issued runtime tokens
 - stores users, environments, sessions, work items, and session events
 - lets a local CLI environment register itself and poll for work
 - lets a cloud runner connect with a worker token and stream session events
@@ -91,7 +92,8 @@ flowchart LR
 ## Auth Flow
 
 The relay uses Azure AD only as the upstream identity provider. Runtime calls
-use relay-issued credentials, not raw Azure tokens.
+use relay-issued credentials, not raw Azure tokens. Browser, CLI, and mobile
+clients all start at relay-owned authorize and token endpoints.
 
 ```mermaid
 sequenceDiagram
@@ -101,10 +103,12 @@ sequenceDiagram
   participant Relay as raku-relay
 
   User->>Client: Sign in
-  Client->>Azure: OIDC login
-  Azure-->>Client: ID token
-  Client->>Relay: POST /v1/auth/azure/exchange
-  Relay->>Relay: Validate issuer, audience, tenant
+  Client->>Relay: GET /v1/oauth/authorize
+  Relay->>Azure: Redirect for upstream login
+  Azure-->>Relay: Authorization code
+  Relay->>Azure: Token exchange + tenant validation
+  Relay-->>Client: Redirect back with relay auth code
+  Client->>Relay: POST /v1/oauth/token
   Relay-->>Client: access token + refresh token
   Client->>Relay: Runtime API calls with relay bearer token
 ```
@@ -190,8 +194,11 @@ Use this for real deployments. In the current codebase this means:
 ## API Surface
 
 Current auth and app-facing endpoints:
+- `GET /v1/oauth/authorize`
+- `GET /v1/oauth/callback`
+- `POST /v1/oauth/token`
+- `GET /v1/oauth/profile`
 - `GET /v1/me`
-- `POST /v1/auth/azure/exchange`
 - `POST /v1/auth/refresh`
 - `POST /v1/auth/logout`
 - `POST /v1/auth/trusted-devices`

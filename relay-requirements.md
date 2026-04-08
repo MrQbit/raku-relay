@@ -12,6 +12,10 @@ enforcement.
 - Mobile
 
 ## Required V1 Endpoints
+- `GET /v1/oauth/authorize`
+- `GET /v1/oauth/callback`
+- `POST /v1/oauth/token`
+- `GET /v1/oauth/profile`
 - `GET /v1/me`
 - `POST /v1/environments/bridge`
 - `GET /v1/environments/{id}/work/poll`
@@ -52,8 +56,12 @@ and issues the runtime credentials used by clients.
 ### Required Relay Configuration
 - `RAKU_AZURE_TENANT_ID`
 - `RAKU_AZURE_CLIENT_ID`
+- `RAKU_AZURE_CLIENT_SECRET`
 - `RAKU_AZURE_ISSUER`
 - `RAKU_AZURE_AUDIENCE`
+- `RAKU_AZURE_AUTHORIZE_URL`
+- `RAKU_AZURE_TOKEN_URL`
+- `RAKU_AZURE_REDIRECT_URI`
 - `RAKU_AZURE_ALLOWED_TENANTS`
 - `RAKU_OIDC_REDIRECT_URIS`
 - `RAKU_OIDC_SUCCESS_URL`
@@ -62,8 +70,10 @@ and issues the runtime credentials used by clients.
 ### Azure AD Requirements
 - Tenant ID must be configurable.
 - Application/client ID must be configurable.
+- Application client secret must be configurable for confidential relay deployments.
 - Issuer and audience validation must be configurable.
-- Redirect URIs must be configurable per environment.
+- Azure upstream redirect URI must be configurable per environment.
+- Client redirect URIs accepted by the relay must be configurable per environment.
 - The relay must support local, staging, and production values.
 - The relay must support a default tenant plus explicit allowed-tenant policy.
 

@@ -18,11 +18,15 @@ async function createFixture(requireTrustedDevice = false) {
     azure: {
       tenantId: 'tenant-a',
       clientId: 'client-id',
+      clientSecret: 'test-secret',
       issuer: 'https://login.microsoftonline.com/test/v2.0',
       audience: 'api://raku-relay',
+      authorizeUrl: 'https://login.microsoftonline.com/test/oauth2/v2.0/authorize',
+      tokenUrl: 'https://login.microsoftonline.com/test/oauth2/v2.0/token',
       allowedTenants: [],
       jwksJson: JSON.stringify({ keys: [publicJwk] }),
-      redirectUris: [],
+      redirectUri: 'http://127.0.0.1:0/v1/oauth/callback',
+      redirectUris: ['http://localhost:3456/callback'],
       successUrl: 'http://localhost/success',
       logoutUrl: 'http://localhost/logout',
     },
@@ -55,7 +59,7 @@ async function createFixture(requireTrustedDevice = false) {
     .setExpirationTime('5m')
     .setIssuedAt()
     .sign(privateKey)
-  return { ...built, azureToken: token }
+  return { ...built, azureToken: token, config }
 }
 
 describe('relay api', () => {
@@ -126,6 +130,62 @@ describe('relay api', () => {
       headers: { authorization: `Bearer ${bridgeJson.worker_token}` },
     })
     expect(connect.statusCode).toBe(200)
+  })
+
+  test('supports relay-owned authorize, callback, token exchange, and profile', async () => {
+    const { tokenService, store, config } = await createFixture()
+    const fakeAzureValidator = {
+      buildAuthorizeUrl: ({ state }: { state: string }) =>
+        `https://login.microsoftonline.com/test/oauth2/v2.0/authorize?state=${encodeURIComponent(state)}`,
+      exchangeAuthorizationCode: async () => ({
+        subject: 'azure-sub-2',
+        tenantId: 'tenant-a',
+        email: 'relay@example.com',
+        displayName: 'Relay User',
+        rawClaims: {},
+      }),
+      validateIdToken: async () => {
+        throw new Error('not used')
+      },
+    }
+    const built = await buildServer({
+      config,
+      store,
+      tokenService,
+      azureValidator: fakeAzureValidator as any,
+    })
+
+    const authorize = await built.app.inject({
+      method: 'GET',
+      url:
+        '/v1/oauth/authorize?client_id=client-id&redirect_uri=http%3A%2F%2Flocalhost%3A3456%2Fcallback&response_type=code&scope=profile%20relay%3Ainference&state=client-state&code_challenge=test-challenge&code_challenge_method=S256',
+    })
+    expect(authorize.statusCode).toBe(302)
+
+    const callbackUrl = new URL(authorize.headers.location!)
+    const relayState = callbackUrl.searchParams.get('state')!
+    const callback = await built.app.inject({
+      method: 'GET',
+      url: `/v1/oauth/callback?code=azure-code&state=${encodeURIComponent(relayState)}`,
+    })
+    expect(callback.statusCode).toBe(302)
+    const redirected = new URL(callback.headers.location!)
+    const authCode = redirected.searchParams.get('code')
+    expect(authCode).toBeTruthy()
+    expect(redirected.searchParams.get('state')).toBe('client-state')
+
+    const token = await built.app.inject({
+      method: 'POST',
+      url: '/v1/oauth/token',
+      payload: {
+        grant_type: 'authorization_code',
+        code: authCode,
+        redirect_uri: 'http://localhost:3456/callback',
+        client_id: 'client-id',
+        code_verifier: 'bad-verifier',
+      },
+    })
+    expect(token.statusCode).toBe(401)
   })
 
   test('enforces trusted devices when enabled', async () => {

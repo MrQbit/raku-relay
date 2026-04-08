@@ -22,7 +22,11 @@ describe('auth package', () => {
       issuer: 'https://login.microsoftonline.com/test/v2.0',
       audience: 'api://raku-relay',
       clientId: 'client-id',
+      clientSecret: 'secret',
       tenantId: 'tenant-a',
+      authorizeUrl: 'https://login.microsoftonline.com/test/oauth2/v2.0/authorize',
+      tokenUrl: 'https://login.microsoftonline.com/test/oauth2/v2.0/token',
+      redirectUri: 'http://localhost:4040/v1/oauth/callback',
       allowedTenants: ['tenant-b'],
       verificationKey: keys.publicJwk,
     })
@@ -50,7 +54,11 @@ describe('auth package', () => {
       issuer: 'https://login.microsoftonline.com/test/v2.0',
       audience: 'api://raku-relay',
       clientId: 'client-id',
+      clientSecret: 'secret',
       tenantId: 'tenant-a',
+      authorizeUrl: 'https://login.microsoftonline.com/test/oauth2/v2.0/authorize',
+      tokenUrl: 'https://login.microsoftonline.com/test/oauth2/v2.0/token',
+      redirectUri: 'http://localhost:4040/v1/oauth/callback',
       allowedTenants: [],
       verificationKey: keys.publicJwk,
     })

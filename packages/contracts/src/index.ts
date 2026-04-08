@@ -84,6 +84,32 @@ export const authExchangeSchema = z.object({
 })
 export type AuthExchangeInput = z.infer<typeof authExchangeSchema>
 
+export const oauthAuthorizeQuerySchema = z.object({
+  client_id: z.string().min(1),
+  redirect_uri: z.string().min(1),
+  response_type: z.literal('code'),
+  scope: z.string().min(1),
+  state: z.string().min(1),
+  code_challenge: z.string().min(1),
+  code_challenge_method: z.literal('S256'),
+  login_hint: z.string().optional(),
+  prompt: z.string().optional(),
+})
+export type OAuthAuthorizeQuery = z.infer<typeof oauthAuthorizeQuerySchema>
+
+export const oauthTokenExchangeSchema = z.object({
+  grant_type: z.enum(['authorization_code', 'refresh_token']),
+  code: z.string().optional(),
+  redirect_uri: z.string().optional(),
+  client_id: z.string().min(1),
+  code_verifier: z.string().optional(),
+  state: z.string().optional(),
+  refresh_token: z.string().optional(),
+  scope: z.string().optional(),
+  expires_in: z.number().int().positive().optional(),
+})
+export type OAuthTokenExchangeInput = z.infer<typeof oauthTokenExchangeSchema>
+
 export const refreshTokenSchema = z.object({
   refresh_token: z.string().min(1),
 })
@@ -123,14 +149,44 @@ export const relayAuthResponseSchema = z.object({
   refresh_token: z.string(),
   expires_in: z.number().int().positive(),
   token_type: z.literal('Bearer'),
+  scope: z.string(),
   user: z.object({
     id: z.string(),
     tenant_id: z.string(),
     email: z.string().nullable(),
     display_name: z.string().nullable(),
   }),
+  account: z
+    .object({
+      uuid: z.string(),
+      email_address: z.string().nullable(),
+    })
+    .optional(),
+  organization: z
+    .object({
+      uuid: z.string(),
+    })
+    .optional(),
 })
 export type RelayAuthResponse = z.infer<typeof relayAuthResponseSchema>
+
+export const relayOauthProfileSchema = z.object({
+  account: z.object({
+    uuid: z.string(),
+    email: z.string().nullable(),
+    display_name: z.string().nullable(),
+    created_at: z.string(),
+  }),
+  organization: z.object({
+    uuid: z.string(),
+    organization_type: z.string(),
+    rate_limit_tier: z.string().nullable(),
+    has_extra_usage_enabled: z.boolean(),
+    billing_type: z.string().nullable(),
+    subscription_created_at: z.string().nullable(),
+  }),
+})
+export type RelayOauthProfile = z.infer<typeof relayOauthProfileSchema>
 
 export const sessionSummarySchema = z.object({
   id: z.string(),

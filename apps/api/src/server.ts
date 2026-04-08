@@ -2,13 +2,15 @@ import Fastify, { type FastifyRequest } from 'fastify'
 import cors from '@fastify/cors'
 import sensible from '@fastify/sensible'
 import websocket from '@fastify/websocket'
-import { randomUUID } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import { loadConfig, type RelayConfig } from '@raku-relay/config'
 import {
   appendSessionEventsSchema,
   authExchangeSchema,
   createCodeSessionSchema,
   createSessionSchema,
+  oauthAuthorizeQuerySchema,
+  oauthTokenExchangeSchema,
   sessionControlSchema,
   sessionReplySchema,
   refreshTokenSchema,
@@ -58,6 +60,75 @@ function readSessionAccessToken(request: FastifyRequest): string | undefined {
   return query.access_token
 }
 
+function encodeRelayState(payload: Record<string, string>) {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
+}
+
+function decodeRelayState(state: string): Record<string, string> {
+  const json = Buffer.from(state, 'base64url').toString('utf8')
+  return JSON.parse(json) as Record<string, string>
+}
+
+function encodePkceS256(codeVerifier: string) {
+  return createHash('sha256').update(codeVerifier).digest('base64url')
+}
+
+function isAllowedClientRedirect(config: RelayConfig, redirectUri: string) {
+  return config.azure.redirectUris.includes(redirectUri)
+}
+
+function buildTokenResponse(
+  user: UserRecord,
+  access: { token: string; expiresIn: number },
+  refresh: { token: string },
+  scope: string,
+) {
+  return {
+    access_token: access.token,
+    refresh_token: refresh.token,
+    expires_in: access.expiresIn,
+    token_type: 'Bearer' as const,
+    scope,
+    user: {
+      id: user.id,
+      tenant_id: user.tenantId,
+      email: user.email,
+      display_name: user.displayName,
+    },
+    account: {
+      uuid: user.id,
+      email_address: user.email,
+    },
+    organization: {
+      uuid: user.tenantId,
+    },
+  }
+}
+
+function buildProfileResponse(user: UserRecord) {
+  const now = new Date(user.createdAt).toISOString()
+  return {
+    account: {
+      uuid: user.id,
+      email: user.email,
+      display_name: user.displayName,
+      created_at: now,
+    },
+    organization: {
+      uuid: user.tenantId,
+      organization_type: 'private_tenant',
+      rate_limit_tier: null,
+      has_extra_usage_enabled: false,
+      billing_type: null,
+      subscription_created_at: null,
+    },
+  }
+}
+
+function generatePkceVerifier() {
+  return randomBytes(32).toString('base64url')
+}
+
 export async function buildServer(options: BuildServerOptions = {}) {
   const config = options.config ?? loadConfig()
   const store =
@@ -86,7 +157,11 @@ export async function buildServer(options: BuildServerOptions = {}) {
       issuer: config.azure.issuer,
       audience: config.azure.audience,
       clientId: config.azure.clientId,
+      clientSecret: config.azure.clientSecret,
       tenantId: config.azure.tenantId,
+      authorizeUrl: config.azure.authorizeUrl,
+      tokenUrl: config.azure.tokenUrl,
+      redirectUri: config.azure.redirectUri,
       allowedTenants: config.azure.allowedTenants,
       verificationKey: azureJwks.keys[0],
     })
@@ -195,6 +270,141 @@ export async function buildServer(options: BuildServerOptions = {}) {
   app.get('/readyz', async () => ({ ok: true, storage_backend: config.storageBackend }))
   app.get('/.well-known/jwks.json', async () => publicJwks)
 
+  app.get('/v1/oauth/authorize', async (request, reply) => {
+    const input = oauthAuthorizeQuerySchema.parse(request.query)
+    if (input.client_id !== config.azure.clientId) {
+      throw app.httpErrors.badRequest('Unknown OAuth client')
+    }
+    if (!isAllowedClientRedirect(config, input.redirect_uri)) {
+      throw app.httpErrors.badRequest('Redirect URI is not allowed')
+    }
+    const azureCodeVerifier = generatePkceVerifier()
+    const relayState = encodeRelayState({
+      client_state: input.state,
+      redirect_uri: input.redirect_uri,
+      code_challenge: input.code_challenge,
+      azure_code_verifier: azureCodeVerifier,
+      scope: input.scope,
+    })
+    const authorizeUrl = azureValidator.buildAuthorizeUrl({
+      state: relayState,
+      codeChallenge: encodePkceS256(azureCodeVerifier),
+      loginHint: input.login_hint,
+      prompt: input.prompt,
+    })
+    return reply.redirect(authorizeUrl)
+  })
+
+  app.get('/v1/oauth/callback', async (request, reply) => {
+    const query = request.query as Record<string, string | undefined>
+    const code = query.code
+    const state = query.state
+    if (!code || !state) {
+      throw app.httpErrors.badRequest('Missing OAuth callback parameters')
+    }
+    const relayState = decodeRelayState(state)
+    const redirectUri = relayState.redirect_uri
+    if (!redirectUri || !isAllowedClientRedirect(config, redirectUri)) {
+      throw app.httpErrors.badRequest('Redirect URI is not allowed')
+    }
+    const identity = await azureValidator.exchangeAuthorizationCode({
+      code,
+      codeVerifier: relayState.azure_code_verifier,
+    })
+    const authCode = await tokenService.issueAuthCode({
+      sub: identity.subject,
+      tenant_id: identity.tenantId,
+      email: identity.email,
+      display_name: identity.displayName,
+      redirect_uri: redirectUri,
+      code_challenge: relayState.code_challenge,
+      scope: relayState.scope ?? 'openid profile offline_access relay:inference',
+    })
+    const redirect = new URL(redirectUri)
+    redirect.searchParams.set('code', authCode.code)
+    redirect.searchParams.set('state', relayState.client_state ?? '')
+    return reply.redirect(redirect.toString())
+  })
+
+  app.post('/v1/oauth/token', async request => {
+    const input = oauthTokenExchangeSchema.parse(request.body)
+    if (input.client_id !== config.azure.clientId) {
+      throw app.httpErrors.badRequest('Unknown OAuth client')
+    }
+
+    if (input.grant_type === 'authorization_code') {
+      if (!input.code || !input.code_verifier || !input.redirect_uri) {
+        throw app.httpErrors.badRequest('Missing authorization_code fields')
+      }
+      if (!isAllowedClientRedirect(config, input.redirect_uri)) {
+        throw app.httpErrors.badRequest('Redirect URI is not allowed')
+      }
+      const payload = await tokenService.verifyAuthCode(input.code).catch(() => null)
+      if (!payload) {
+        throw app.httpErrors.unauthorized('Authorization code is invalid')
+      }
+      if (String(payload.redirect_uri) !== input.redirect_uri) {
+        throw app.httpErrors.unauthorized('Redirect URI mismatch')
+      }
+      if (String(payload.code_challenge) !== encodePkceS256(input.code_verifier)) {
+        throw app.httpErrors.unauthorized('Invalid code verifier')
+      }
+      const user = await store.upsertUser({
+        subject: String(payload.sub),
+        tenantId: String(payload.tenant_id),
+        email: typeof payload.email === 'string' ? payload.email : null,
+        displayName:
+          typeof payload.display_name === 'string' ? payload.display_name : null,
+        rawClaims: payload,
+      })
+      const scope =
+        typeof payload.scope === 'string'
+          ? payload.scope
+          : 'openid profile offline_access relay:inference'
+      const access = await tokenService.issueAccessToken({
+        sub: user.id,
+        tenant_id: user.tenantId,
+        scopes: scope.split(/\s+/).filter(Boolean),
+        session_capabilities: ['sessions', 'bridge', 'runner'],
+      })
+      const refresh = tokenService.issueOpaqueRefreshToken()
+      await store.createRefreshToken(
+        user.id,
+        refresh.hash,
+        Date.now() + refresh.expiresIn * 1000,
+      )
+      return buildTokenResponse(user, access, refresh, scope)
+    }
+
+    const current = await store.getRefreshToken(sha256(input.refresh_token ?? ''))
+    if (!current || current.expiresAt < Date.now() || current.revokedAt) {
+      throw app.httpErrors.unauthorized('Refresh token is invalid')
+    }
+    const user = await store.getUser(current.userId)
+    if (!user) {
+      throw app.httpErrors.unauthorized('User not found for refresh token')
+    }
+    const nextRefresh = tokenService.issueOpaqueRefreshToken()
+    await store.rotateRefreshToken(
+      sha256(input.refresh_token ?? ''),
+      nextRefresh.hash,
+      Date.now() + config.ttl.refreshTokenSeconds * 1000,
+    )
+    const scope = input.scope ?? 'openid profile offline_access relay:inference'
+    const access = await tokenService.issueAccessToken({
+      sub: user.id,
+      tenant_id: user.tenantId,
+      scopes: scope.split(/\s+/).filter(Boolean),
+      session_capabilities: ['sessions', 'bridge', 'runner'],
+    })
+    return buildTokenResponse(user, access, nextRefresh, scope)
+  })
+
+  app.get('/v1/oauth/profile', async request => {
+    const user = await requireUser(request, { skipTrustedDevice: true })
+    return buildProfileResponse(user)
+  })
+
   app.get('/v1/me', async request => {
     const user = await requireUser(request, { skipTrustedDevice: true })
     return {
@@ -217,7 +427,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     const access = await tokenService.issueAccessToken({
       sub: user.id,
       tenant_id: user.tenantId,
-      scopes: ['relay:read', 'relay:write'],
+      scopes: ['openid', 'profile', 'offline_access', 'relay:inference'],
       session_capabilities: ['sessions', 'bridge', 'runner'],
     })
     const refresh = tokenService.issueOpaqueRefreshToken()
@@ -227,18 +437,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
       Date.now() + refresh.expiresIn * 1000,
     )
     audit('auth.exchange', { userId: user.id, tenantId: user.tenantId })
-    return {
-      access_token: access.token,
-      refresh_token: refresh.token,
-      expires_in: access.expiresIn,
-      token_type: 'Bearer',
-      user: {
-        id: user.id,
-        tenant_id: user.tenantId,
-        email: user.email,
-        display_name: user.displayName,
-      },
-    }
+    return buildTokenResponse(
+      user,
+      access,
+      refresh,
+      'openid profile offline_access relay:inference',
+    )
   })
 
   app.post('/v1/auth/refresh', async request => {
@@ -260,22 +464,16 @@ export async function buildServer(options: BuildServerOptions = {}) {
     const access = await tokenService.issueAccessToken({
       sub: user.id,
       tenant_id: user.tenantId,
-      scopes: ['relay:read', 'relay:write'],
+      scopes: ['openid', 'profile', 'offline_access', 'relay:inference'],
       session_capabilities: ['sessions', 'bridge', 'runner'],
     })
     audit('auth.refresh', { userId: user.id })
-    return {
-      access_token: access.token,
-      refresh_token: nextRefresh.token,
-      expires_in: access.expiresIn,
-      token_type: 'Bearer',
-      user: {
-        id: user.id,
-        tenant_id: user.tenantId,
-        email: user.email,
-        display_name: user.displayName,
-      },
-    }
+    return buildTokenResponse(
+      user,
+      access,
+      nextRefresh,
+      'openid profile offline_access relay:inference',
+    )
   })
 
   app.post('/v1/auth/logout', async request => {

@@ -9,10 +9,14 @@ const envSchema = z.object({
   RAKU_RELAY_PUBLIC_JWKS: z.string(),
   RAKU_AZURE_TENANT_ID: z.string().min(1),
   RAKU_AZURE_CLIENT_ID: z.string().min(1),
+  RAKU_AZURE_CLIENT_SECRET: z.string().optional(),
   RAKU_AZURE_ISSUER: z.string().url(),
   RAKU_AZURE_AUDIENCE: z.string().min(1),
+  RAKU_AZURE_AUTHORIZE_URL: z.string().url().optional(),
+  RAKU_AZURE_TOKEN_URL: z.string().url().optional(),
   RAKU_AZURE_ALLOWED_TENANTS: z.string().default(''),
   RAKU_AZURE_JWKS_JSON: z.string().optional(),
+  RAKU_AZURE_REDIRECT_URI: z.string().url().optional(),
   RAKU_OIDC_REDIRECT_URIS: z.string().default(''),
   RAKU_OIDC_SUCCESS_URL: z.string().url(),
   RAKU_OIDC_LOGOUT_URL: z.string().url(),
@@ -29,8 +33,13 @@ const envSchema = z.object({
 
 export type RelayConfig = ReturnType<typeof loadConfig>
 
+function azureAuthorityBase(issuer: string) {
+  return issuer.replace(/\/v2\.0\/?$/, '')
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const parsed = envSchema.parse(env)
+  const azureAuthority = azureAuthorityBase(parsed.RAKU_AZURE_ISSUER)
   return {
     host: parsed.RAKU_RELAY_HOST,
     port: parsed.RAKU_RELAY_PORT,
@@ -41,12 +50,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     azure: {
       tenantId: parsed.RAKU_AZURE_TENANT_ID,
       clientId: parsed.RAKU_AZURE_CLIENT_ID,
+      clientSecret: parsed.RAKU_AZURE_CLIENT_SECRET,
       issuer: parsed.RAKU_AZURE_ISSUER,
       audience: parsed.RAKU_AZURE_AUDIENCE,
+      authorizeUrl:
+        parsed.RAKU_AZURE_AUTHORIZE_URL ??
+        `${azureAuthority}/oauth2/v2.0/authorize`,
+      tokenUrl:
+        parsed.RAKU_AZURE_TOKEN_URL ??
+        `${azureAuthority}/oauth2/v2.0/token`,
       allowedTenants: parsed.RAKU_AZURE_ALLOWED_TENANTS.split(',')
         .map(value => value.trim())
         .filter(Boolean),
       jwksJson: parsed.RAKU_AZURE_JWKS_JSON,
+      redirectUri:
+        parsed.RAKU_AZURE_REDIRECT_URI ??
+        `${parsed.RAKU_RELAY_BASE_URL.replace(/\/$/, '')}/v1/oauth/callback`,
       redirectUris: parsed.RAKU_OIDC_REDIRECT_URIS.split(',')
         .map(value => value.trim())
         .filter(Boolean),
