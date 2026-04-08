@@ -1,0 +1,6 @@
+{
+  "name": "@raku-relay/auth",
+  "private": true,
+  "type": "module"
+}
+

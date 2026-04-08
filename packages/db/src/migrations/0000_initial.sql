@@ -1,0 +1,3 @@
+-- Initial relay schema placeholder.
+-- Generate concrete migrations with `bunx drizzle-kit generate`.
+-- Tables are declared in packages/db/src/schema.ts.

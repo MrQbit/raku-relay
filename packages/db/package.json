@@ -1,0 +1,6 @@
+{
+  "name": "@raku-relay/db",
+  "private": true,
+  "type": "module"
+}
+

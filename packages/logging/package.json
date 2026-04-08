@@ -1,0 +1,6 @@
+{
+  "name": "@raku-relay/logging",
+  "private": true,
+  "type": "module"
+}
+

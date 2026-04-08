@@ -1,0 +1,6 @@
+{
+  "name": "@raku-relay/runner",
+  "private": true,
+  "type": "module"
+}
+
