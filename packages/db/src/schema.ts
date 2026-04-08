@@ -14,6 +14,7 @@ export const users = pgTable('users', {
   tenantId: varchar('tenant_id', { length: 128 }).notNull(),
   email: varchar('email', { length: 320 }),
   displayName: varchar('display_name', { length: 255 }),
+  subject: varchar('subject', { length: 255 }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
 })
@@ -64,21 +65,11 @@ export const environments = pgTable('environments', {
   gitRepoUrl: text('git_repo_url'),
   maxSessions: integer('max_sessions').notNull().default(1),
   metadata: jsonb('metadata'),
+  secretHash: text('secret_hash').notNull(),
   archivedAt: timestamp('archived_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
 })
-
-export const environmentBridgeRegistrations = pgTable(
-  'environment_bridge_registrations',
-  {
-    id: uuid('id').primaryKey(),
-    environmentId: uuid('environment_id').notNull(),
-    secretHash: text('secret_hash').notNull(),
-    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
-  },
-)
 
 export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey(),
@@ -114,6 +105,7 @@ export const workItems = pgTable('work_items', {
   id: uuid('id').primaryKey(),
   environmentId: uuid('environment_id').notNull(),
   sessionId: uuid('session_id').notNull(),
+  token: text('token').notNull(),
   tokenHash: text('token_hash').notNull(),
   status: varchar('status', { length: 32 }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
@@ -136,6 +128,7 @@ export const workerCredentials = pgTable('worker_credentials', {
   workerEpoch: integer('worker_epoch').notNull(),
   tokenJti: varchar('token_jti', { length: 255 }).notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  connectedAt: timestamp('connected_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
 })
 
@@ -148,4 +141,3 @@ export const auditLogs = pgTable('audit_logs', {
   metadata: jsonb('metadata'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
 })
-

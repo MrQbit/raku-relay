@@ -28,6 +28,7 @@ async function createFixture(requireTrustedDevice = false) {
     },
     postgresUrl: 'postgres://unused',
     redisUrl: 'redis://unused',
+    redisChannelPrefix: 'test-relay',
     azuriteBlobUrl: undefined,
     storageBackend: 'memory' as const,
     requireTrustedDevice,

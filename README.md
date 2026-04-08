@@ -24,6 +24,11 @@ issuance, and the control-plane pieces needed for cloud runners.
 3. `bun run dev:api`
 4. In another shell, run `bun run test`
 
+## Key Docs
+
+- [howto.md](./howto.md)
+- [relay-requirements.md](./relay-requirements.md)
+
 ## Local Dev Services
 
 `docker/compose.yml` starts Postgres, Redis, and Azurite for local integration.
@@ -35,4 +40,3 @@ issuance, and the control-plane pieces needed for cloud runners.
 - `bun run build`
 - `bun run typecheck`
 - `bun run test`
-

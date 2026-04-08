@@ -10,3 +10,4 @@ The intended production target is Azure Container Apps with:
 
 Terraform scaffolding lives in `infra/terraform`.
 
+See [/Volumes/ML/raku-relay/howto.md](/Volumes/ML/raku-relay/howto.md) for the step-by-step deployment explanation and architecture diagrams.

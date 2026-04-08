@@ -10,6 +10,7 @@
   "scripts": {
     "dev:api": "bun --watch apps/api/src/index.ts",
     "dev:runner": "bun --watch apps/runner/src/index.ts",
+    "db:migrate:psql": "psql \"$RAKU_POSTGRES_URL\" -f packages/db/src/migrations/0000_initial.sql",
     "build": "bun run build:api && bun run build:runner",
     "build:api": "bun build apps/api/src/index.ts --outfile dist/apps/api/index.mjs --target bun",
     "build:runner": "bun build apps/runner/src/index.ts --outfile dist/apps/runner/index.mjs --target bun",

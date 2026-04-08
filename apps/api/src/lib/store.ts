@@ -51,7 +51,7 @@ export type SessionRecord = {
   archivedAt?: string
 }
 
-type RefreshTokenRecord = {
+export type RefreshTokenRecord = {
   id: string
   userId: string
   tokenHash: string
@@ -60,7 +60,7 @@ type RefreshTokenRecord = {
   replacedByTokenId?: string
 }
 
-type TrustedDeviceRecord = {
+export type TrustedDeviceRecord = {
   id: string
   userId: string
   label: string
@@ -81,7 +81,7 @@ export type WorkItemRecord = {
   heartbeatAt?: string
 }
 
-type WorkerCredentialRecord = {
+export type WorkerCredentialRecord = {
   sessionId: string
   workerEpoch: number
   tokenJti: string
@@ -89,7 +89,110 @@ type WorkerCredentialRecord = {
   connectedAt?: number
 }
 
-export class MemoryRelayStore {
+export type EnvironmentUpsertInput = {
+  ownerUserId: string
+  kind: EnvironmentKind
+  machineName: string
+  directory: string
+  branch?: string
+  gitRepoUrl?: string
+  maxSessions: number
+  metadata?: Record<string, unknown>
+  reuseEnvironmentId?: string
+  secretHash: string
+}
+
+export interface RelayStore {
+  upsertUser(identity: AzureIdentity): Promise<UserRecord>
+  getUser(userId: string): Promise<UserRecord | undefined>
+  createRefreshToken(
+    userId: string,
+    tokenHash: string,
+    expiresAt: number,
+  ): Promise<RefreshTokenRecord>
+  rotateRefreshToken(
+    oldTokenHash: string,
+    newTokenHash: string,
+    expiresAt: number,
+  ): Promise<{ current: RefreshTokenRecord; next: RefreshTokenRecord } | null>
+  getRefreshToken(tokenHash: string): Promise<RefreshTokenRecord | undefined>
+  revokeRefreshToken(tokenHash: string): Promise<void>
+  createTrustedDevice(
+    userId: string,
+    label: string,
+    tokenHash: string,
+    expiresAt: number,
+  ): Promise<TrustedDeviceRecord>
+  validateTrustedDevice(userId: string, token: string): Promise<boolean>
+  createOrReuseEnvironment(
+    input: EnvironmentUpsertInput,
+  ): Promise<EnvironmentRecord>
+  getEnvironment(id: string): Promise<EnvironmentRecord | undefined>
+  validateEnvironmentSecret(
+    id: string,
+    token: string,
+  ): Promise<EnvironmentRecord | undefined>
+  archiveEnvironment(id: string): Promise<EnvironmentRecord | undefined>
+  createSession(
+    userId: string,
+    input: CreateSessionInput,
+  ): Promise<SessionRecord>
+  createCodeSession(
+    userId: string,
+    input: CreateCodeSessionInput,
+  ): Promise<SessionRecord>
+  getSession(id: string): Promise<SessionRecord | undefined>
+  updateSession(
+    sessionId: string,
+    input: UpdateSessionInput,
+  ): Promise<SessionRecord | undefined>
+  archiveSession(sessionId: string): Promise<SessionRecord | undefined>
+  bumpWorkerEpoch(sessionId: string): Promise<SessionRecord | undefined>
+  appendEvent(
+    sessionId: string,
+    type: string,
+    payload: unknown,
+  ): Promise<SessionEventEnvelope>
+  listEvents(
+    sessionId: string,
+    afterSeq?: number,
+  ): Promise<SessionEventEnvelope[]>
+  subscribe(
+    sessionId: string,
+    listener: (event: SessionEventEnvelope) => void,
+  ): Promise<() => void | Promise<void>>
+  createWorkItem(
+    environmentId: string,
+    sessionId: string,
+    token: string,
+    tokenHash: string,
+  ): Promise<WorkItemRecord>
+  pollWork(environmentId: string): Promise<WorkItemRecord | undefined>
+  getWorkItem(workId: string): Promise<WorkItemRecord | undefined>
+  validateWorkToken(
+    workId: string,
+    token: string,
+  ): Promise<WorkItemRecord | undefined>
+  claimWork(workId: string): Promise<WorkItemRecord | undefined>
+  heartbeatWork(workId: string): Promise<WorkItemRecord | undefined>
+  stopWork(workId: string): Promise<WorkItemRecord | undefined>
+  recordWorkerCredential(
+    sessionId: string,
+    workerEpoch: number,
+    tokenJti: string,
+    expiresAt: number,
+  ): Promise<void>
+  getWorkerCredential(
+    sessionId: string,
+  ): Promise<WorkerCredentialRecord | undefined>
+  connectWorker(
+    sessionId: string,
+    workerEpoch: number,
+  ): Promise<WorkerCredentialRecord | undefined>
+  close(): Promise<void>
+}
+
+export class MemoryRelayStore implements RelayStore {
   private users = new Map<string, UserRecord>()
   private usersBySubject = new Map<string, string>()
   private refreshTokens = new Map<string, RefreshTokenRecord>()
@@ -101,7 +204,7 @@ export class MemoryRelayStore {
   private workerCredentials = new Map<string, WorkerCredentialRecord>()
   private emitter = new EventEmitter()
 
-  upsertUser(identity: AzureIdentity): UserRecord {
+  async upsertUser(identity: AzureIdentity): Promise<UserRecord> {
     const now = new Date().toISOString()
     const lookupKey = `${identity.tenantId}:${identity.subject}`
     const existingId = this.usersBySubject.get(lookupKey)
@@ -131,11 +234,15 @@ export class MemoryRelayStore {
     return user
   }
 
-  getUser(userId: string): UserRecord | undefined {
+  async getUser(userId: string): Promise<UserRecord | undefined> {
     return this.users.get(userId)
   }
 
-  createRefreshToken(userId: string, tokenHash: string, expiresAt: number) {
+  async createRefreshToken(
+    userId: string,
+    tokenHash: string,
+    expiresAt: number,
+  ): Promise<RefreshTokenRecord> {
     const record: RefreshTokenRecord = {
       id: randomUUID(),
       userId,
@@ -146,34 +253,40 @@ export class MemoryRelayStore {
     return record
   }
 
-  rotateRefreshToken(oldTokenHash: string, newTokenHash: string, expiresAt: number) {
+  async rotateRefreshToken(
+    oldTokenHash: string,
+    newTokenHash: string,
+    expiresAt: number,
+  ): Promise<{ current: RefreshTokenRecord; next: RefreshTokenRecord } | null> {
     const current = this.refreshTokens.get(oldTokenHash)
     if (!current || current.revokedAt || current.expiresAt < Date.now()) {
       return null
     }
     current.revokedAt = Date.now()
-    const next = this.createRefreshToken(current.userId, newTokenHash, expiresAt)
+    const next = await this.createRefreshToken(current.userId, newTokenHash, expiresAt)
     current.replacedByTokenId = next.id
     return { current, next }
   }
 
-  getRefreshToken(tokenHash: string): RefreshTokenRecord | undefined {
+  async getRefreshToken(
+    tokenHash: string,
+  ): Promise<RefreshTokenRecord | undefined> {
     return this.refreshTokens.get(tokenHash)
   }
 
-  revokeRefreshToken(tokenHash: string): void {
+  async revokeRefreshToken(tokenHash: string): Promise<void> {
     const token = this.refreshTokens.get(tokenHash)
     if (token) {
       token.revokedAt = Date.now()
     }
   }
 
-  createTrustedDevice(
+  async createTrustedDevice(
     userId: string,
     label: string,
     tokenHash: string,
     expiresAt: number,
-  ): TrustedDeviceRecord {
+  ): Promise<TrustedDeviceRecord> {
     const record: TrustedDeviceRecord = {
       id: randomUUID(),
       userId,
@@ -185,7 +298,7 @@ export class MemoryRelayStore {
     return record
   }
 
-  validateTrustedDevice(userId: string, token: string): boolean {
+  async validateTrustedDevice(userId: string, token: string): Promise<boolean> {
     const record = this.trustedDevices.get(sha256(token))
     if (!record || record.userId !== userId || record.expiresAt < Date.now()) {
       return false
@@ -194,18 +307,9 @@ export class MemoryRelayStore {
     return true
   }
 
-  createOrReuseEnvironment(input: {
-    ownerUserId: string
-    kind: EnvironmentKind
-    machineName: string
-    directory: string
-    branch?: string
-    gitRepoUrl?: string
-    maxSessions: number
-    metadata?: Record<string, unknown>
-    reuseEnvironmentId?: string
-    secretHash: string
-  }): EnvironmentRecord {
+  async createOrReuseEnvironment(
+    input: EnvironmentUpsertInput,
+  ): Promise<EnvironmentRecord> {
     const now = new Date().toISOString()
     if (input.reuseEnvironmentId) {
       const existing = this.environments.get(input.reuseEnvironmentId)
@@ -243,11 +347,14 @@ export class MemoryRelayStore {
     return environment
   }
 
-  getEnvironment(id: string): EnvironmentRecord | undefined {
+  async getEnvironment(id: string): Promise<EnvironmentRecord | undefined> {
     return this.environments.get(id)
   }
 
-  validateEnvironmentSecret(id: string, token: string): EnvironmentRecord | undefined {
+  async validateEnvironmentSecret(
+    id: string,
+    token: string,
+  ): Promise<EnvironmentRecord | undefined> {
     const environment = this.environments.get(id)
     if (!environment) {
       return undefined
@@ -255,7 +362,7 @@ export class MemoryRelayStore {
     return environment.secretHash === sha256(token) ? environment : undefined
   }
 
-  archiveEnvironment(id: string) {
+  async archiveEnvironment(id: string): Promise<EnvironmentRecord | undefined> {
     const environment = this.environments.get(id)
     if (!environment) {
       return undefined
@@ -265,7 +372,10 @@ export class MemoryRelayStore {
     return environment
   }
 
-  createSession(userId: string, input: CreateSessionInput): SessionRecord {
+  async createSession(
+    userId: string,
+    input: CreateSessionInput,
+  ): Promise<SessionRecord> {
     return this.insertSession({
       ownerUserId: userId,
       environmentId: input.environment_id,
@@ -274,7 +384,10 @@ export class MemoryRelayStore {
     })
   }
 
-  createCodeSession(userId: string, input: CreateCodeSessionInput): SessionRecord {
+  async createCodeSession(
+    userId: string,
+    input: CreateCodeSessionInput,
+  ): Promise<SessionRecord> {
     return this.insertSession({
       ownerUserId: userId,
       environmentId: input.environment_id,
@@ -288,12 +401,12 @@ export class MemoryRelayStore {
     })
   }
 
-  private insertSession(input: {
+  private async insertSession(input: {
     ownerUserId: string
     environmentId?: string
     title: string | null
     metadata: Record<string, unknown>
-  }): SessionRecord {
+  }): Promise<SessionRecord> {
     const now = new Date().toISOString()
     const session: SessionRecord = {
       id: randomUUID(),
@@ -312,11 +425,14 @@ export class MemoryRelayStore {
     return session
   }
 
-  getSession(id: string): SessionRecord | undefined {
+  async getSession(id: string): Promise<SessionRecord | undefined> {
     return this.sessions.get(id)
   }
 
-  updateSession(sessionId: string, input: UpdateSessionInput): SessionRecord | undefined {
+  async updateSession(
+    sessionId: string,
+    input: UpdateSessionInput,
+  ): Promise<SessionRecord | undefined> {
     const session = this.sessions.get(sessionId)
     if (!session) {
       return undefined
@@ -337,7 +453,9 @@ export class MemoryRelayStore {
     return session
   }
 
-  archiveSession(sessionId: string): SessionRecord | undefined {
+  async archiveSession(
+    sessionId: string,
+  ): Promise<SessionRecord | undefined> {
     const session = this.sessions.get(sessionId)
     if (!session) {
       return undefined
@@ -348,11 +466,23 @@ export class MemoryRelayStore {
     return session
   }
 
-  appendEvent(
+  async bumpWorkerEpoch(
+    sessionId: string,
+  ): Promise<SessionRecord | undefined> {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      return undefined
+    }
+    session.workerEpoch += 1
+    session.updatedAt = new Date().toISOString()
+    return session
+  }
+
+  async appendEvent(
     sessionId: string,
     type: string,
     payload: unknown,
-  ): SessionEventEnvelope {
+  ): Promise<SessionEventEnvelope> {
     const session = this.sessions.get(sessionId)
     if (!session) {
       throw new Error('Session not found')
@@ -377,27 +507,30 @@ export class MemoryRelayStore {
     return event
   }
 
-  listEvents(sessionId: string, afterSeq = 0): SessionEventEnvelope[] {
+  async listEvents(
+    sessionId: string,
+    afterSeq = 0,
+  ): Promise<SessionEventEnvelope[]> {
     const events = this.sessionEvents.get(sessionId) ?? []
     return events.filter(event => event.seq > afterSeq)
   }
 
-  subscribe(
+  async subscribe(
     sessionId: string,
     listener: (event: SessionEventEnvelope) => void,
-  ): () => void {
+  ): Promise<() => void> {
     this.emitter.on(`session:${sessionId}`, listener)
     return () => {
       this.emitter.off(`session:${sessionId}`, listener)
     }
   }
 
-  createWorkItem(
+  async createWorkItem(
     environmentId: string,
     sessionId: string,
     token: string,
     tokenHash: string,
-  ) {
+  ): Promise<WorkItemRecord> {
     const item: WorkItemRecord = {
       id: randomUUID(),
       environmentId,
@@ -411,17 +544,20 @@ export class MemoryRelayStore {
     return item
   }
 
-  pollWork(environmentId: string): WorkItemRecord | undefined {
+  async pollWork(environmentId: string): Promise<WorkItemRecord | undefined> {
     return [...this.workItems.values()].find(
       work => work.environmentId === environmentId && work.status === 'queued',
     )
   }
 
-  getWorkItem(workId: string): WorkItemRecord | undefined {
+  async getWorkItem(workId: string): Promise<WorkItemRecord | undefined> {
     return this.workItems.get(workId)
   }
 
-  validateWorkToken(workId: string, token: string): WorkItemRecord | undefined {
+  async validateWorkToken(
+    workId: string,
+    token: string,
+  ): Promise<WorkItemRecord | undefined> {
     const work = this.workItems.get(workId)
     if (!work) {
       return undefined
@@ -429,7 +565,7 @@ export class MemoryRelayStore {
     return work.tokenHash === sha256(token) ? work : undefined
   }
 
-  claimWork(workId: string): WorkItemRecord | undefined {
+  async claimWork(workId: string): Promise<WorkItemRecord | undefined> {
     const work = this.workItems.get(workId)
     if (!work) {
       return undefined
@@ -439,7 +575,7 @@ export class MemoryRelayStore {
     return work
   }
 
-  heartbeatWork(workId: string): WorkItemRecord | undefined {
+  async heartbeatWork(workId: string): Promise<WorkItemRecord | undefined> {
     const work = this.workItems.get(workId)
     if (!work) {
       return undefined
@@ -448,7 +584,7 @@ export class MemoryRelayStore {
     return work
   }
 
-  stopWork(workId: string): WorkItemRecord | undefined {
+  async stopWork(workId: string): Promise<WorkItemRecord | undefined> {
     const work = this.workItems.get(workId)
     if (!work) {
       return undefined
@@ -457,12 +593,12 @@ export class MemoryRelayStore {
     return work
   }
 
-  recordWorkerCredential(
+  async recordWorkerCredential(
     sessionId: string,
     workerEpoch: number,
     tokenJti: string,
     expiresAt: number,
-  ) {
+  ): Promise<void> {
     this.workerCredentials.set(sessionId, {
       sessionId,
       workerEpoch,
@@ -471,11 +607,16 @@ export class MemoryRelayStore {
     })
   }
 
-  getWorkerCredential(sessionId: string) {
+  async getWorkerCredential(
+    sessionId: string,
+  ): Promise<WorkerCredentialRecord | undefined> {
     return this.workerCredentials.get(sessionId)
   }
 
-  connectWorker(sessionId: string, workerEpoch: number) {
+  async connectWorker(
+    sessionId: string,
+    workerEpoch: number,
+  ): Promise<WorkerCredentialRecord | undefined> {
     const credential = this.workerCredentials.get(sessionId)
     if (!credential || credential.workerEpoch !== workerEpoch) {
       return undefined
@@ -483,6 +624,8 @@ export class MemoryRelayStore {
     credential.connectedAt = Date.now()
     return credential
   }
+
+  async close(): Promise<void> {}
 }
 
 export function createOpaqueSecret(): string {
@@ -490,17 +633,15 @@ export function createOpaqueSecret(): string {
 }
 
 export async function issueBridgeCredentials(
-  store: MemoryRelayStore,
+  store: RelayStore,
   tokenService: RelayTokenService,
   sessionId: string,
   user: UserRecord,
 ) {
-  const session = store.getSession(sessionId)
+  const session = await store.bumpWorkerEpoch(sessionId)
   if (!session) {
     throw new Error('Session not found')
   }
-  session.workerEpoch += 1
-  session.updatedAt = new Date().toISOString()
   const worker = await tokenService.issueWorkerToken({
     sub: user.id,
     tenant_id: user.tenantId,
@@ -508,7 +649,7 @@ export async function issueBridgeCredentials(
     worker_epoch: session.workerEpoch,
     role: 'worker',
   })
-  store.recordWorkerCredential(
+  await store.recordWorkerCredential(
     session.id,
     session.workerEpoch,
     worker.jti,

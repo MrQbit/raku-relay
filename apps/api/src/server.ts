@@ -24,14 +24,16 @@ import {
   MemoryRelayStore,
   createOpaqueSecret,
   issueBridgeCredentials,
+  type RelayStore,
   type SessionRecord,
   type UserRecord,
 } from './lib/store.js'
+import { createRelayStore } from './lib/storeFactory.js'
 import { RunnerLauncher } from './services/launcher.js'
 
 type BuildServerOptions = {
   config?: RelayConfig
-  store?: MemoryRelayStore
+  store?: RelayStore
   azureValidator?: AzureTokenValidator
   tokenService?: RelayTokenService
 }
@@ -46,7 +48,11 @@ function readBearerToken(request: FastifyRequest): string | undefined {
 
 export async function buildServer(options: BuildServerOptions = {}) {
   const config = options.config ?? loadConfig()
-  const store = options.store ?? new MemoryRelayStore()
+  const store =
+    options.store ??
+    (config.storageBackend === 'memory'
+      ? new MemoryRelayStore()
+      : await createRelayStore(config))
   const privateJwk = JSON.parse(config.privateJwkJson)
   const publicJwks = JSON.parse(config.publicJwksJson)
   const tokenService =
@@ -88,17 +94,17 @@ export async function buildServer(options: BuildServerOptions = {}) {
     }
     try {
       const payload = await tokenService.verifyRelayAccessToken(token)
-      const user = store.getUser(String(payload.sub))
+      const user = await store.getUser(String(payload.sub))
       if (!user) {
         throw new Error('User not found')
       }
       if (
         !options?.skipTrustedDevice &&
         config.requireTrustedDevice &&
-        !store.validateTrustedDevice(
+        !(await store.validateTrustedDevice(
           user.id,
           String(request.headers['x-trusted-device-token'] ?? ''),
-        )
+        ))
       ) {
         throw app.httpErrors.unauthorized('Trusted device token required')
       }
@@ -108,13 +114,13 @@ export async function buildServer(options: BuildServerOptions = {}) {
     }
   }
 
-  function requireEnvironmentSecret(request: FastifyRequest) {
+  async function requireEnvironmentSecret(request: FastifyRequest) {
     const token = readBearerToken(request)
     const environmentId = String((request.params as Record<string, string>).id)
     if (!token) {
       throw app.httpErrors.unauthorized('Missing bridge secret')
     }
-    const environment = store.validateEnvironmentSecret(environmentId, token)
+    const environment = await store.validateEnvironmentSecret(environmentId, token)
     if (!environment) {
       throw app.httpErrors.unauthorized('Invalid bridge secret')
     }
@@ -131,7 +137,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     }
     try {
       const payload = await tokenService.verifyRelayAccessToken(token)
-      const user = store.getUser(String(payload.sub))
+      const user = await store.getUser(String(payload.sub))
       if (!user) {
         throw new Error('User not found')
       }
@@ -147,7 +153,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       ) {
         throw app.httpErrors.unauthorized('Worker token scope mismatch')
       }
-      const credential = store.getWorkerCredential(sessionId)
+      const credential = await store.getWorkerCredential(sessionId)
       if (
         !credential ||
         credential.workerEpoch !== Number(payload.worker_epoch) ||
@@ -155,7 +161,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       ) {
         throw app.httpErrors.unauthorized('Worker token expired or stale')
       }
-      const user = store.getUser(String(payload.sub))
+      const user = await store.getUser(String(payload.sub))
       if (!user) {
         throw app.httpErrors.unauthorized('Worker user not found')
       }
@@ -170,7 +176,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
   app.post('/v1/auth/azure/exchange', async request => {
     const input = authExchangeSchema.parse(request.body)
     const identity = await azureValidator.validateIdToken(input.id_token)
-    const user = store.upsertUser(identity)
+    const user = await store.upsertUser(identity)
     const access = await tokenService.issueAccessToken({
       sub: user.id,
       tenant_id: user.tenantId,
@@ -178,7 +184,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       session_capabilities: ['sessions', 'bridge', 'runner'],
     })
     const refresh = tokenService.issueOpaqueRefreshToken()
-    store.createRefreshToken(
+    await store.createRefreshToken(
       user.id,
       refresh.hash,
       Date.now() + refresh.expiresIn * 1000,
@@ -200,16 +206,16 @@ export async function buildServer(options: BuildServerOptions = {}) {
 
   app.post('/v1/auth/refresh', async request => {
     const input = refreshTokenSchema.parse(request.body)
-    const current = store.getRefreshToken(sha256(input.refresh_token))
+    const current = await store.getRefreshToken(sha256(input.refresh_token))
     if (!current || current.revokedAt || current.expiresAt < Date.now()) {
       throw app.httpErrors.unauthorized('Refresh token is invalid')
     }
-    const user = store.getUser(current.userId)
+    const user = await store.getUser(current.userId)
     if (!user) {
       throw app.httpErrors.unauthorized('User not found for refresh token')
     }
     const nextRefresh = tokenService.issueOpaqueRefreshToken()
-    store.rotateRefreshToken(
+    await store.rotateRefreshToken(
       sha256(input.refresh_token),
       nextRefresh.hash,
       Date.now() + nextRefresh.expiresIn * 1000,
@@ -237,7 +243,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
 
   app.post('/v1/auth/logout', async request => {
     const input = refreshTokenSchema.parse(request.body)
-    store.revokeRefreshToken(sha256(input.refresh_token))
+    await store.revokeRefreshToken(sha256(input.refresh_token))
     return { ok: true }
   })
 
@@ -245,7 +251,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     const user = await requireUser(request, { skipTrustedDevice: true })
     const input = trustedDeviceRequestSchema.parse(request.body)
     const trusted = tokenService.issueTrustedDeviceToken()
-    store.createTrustedDevice(
+    await store.createTrustedDevice(
       user.id,
       input.label,
       trusted.hash,
@@ -263,7 +269,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     const user = await requireUser(request)
     const input = registerEnvironmentSchema.parse(request.body)
     const secret = createOpaqueSecret()
-    const environment = store.createOrReuseEnvironment({
+    const environment = await store.createOrReuseEnvironment({
       ownerUserId: user.id,
       kind: 'local_bridge',
       machineName: input.machine_name,
@@ -289,11 +295,11 @@ export async function buildServer(options: BuildServerOptions = {}) {
   app.delete('/v1/environments/bridge/:id', async request => {
     const user = await requireUser(request)
     const id = String((request.params as Record<string, string>).id)
-    const environment = store.getEnvironment(id)
+    const environment = await store.getEnvironment(id)
     if (!environment || environment.ownerUserId !== user.id) {
       throw app.httpErrors.notFound('Environment not found')
     }
-    store.archiveEnvironment(id)
+    await store.archiveEnvironment(id)
     audit('environment.archive', { userId: user.id, environmentId: id })
     return { ok: true }
   })
@@ -301,12 +307,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
   app.post('/v1/environments/:id/bridge/reconnect', async request => {
     const user = await requireUser(request)
     const id = String((request.params as Record<string, string>).id)
-    const environment = store.getEnvironment(id)
+    const environment = await store.getEnvironment(id)
     if (!environment || environment.ownerUserId !== user.id) {
       throw app.httpErrors.notFound('Environment not found')
     }
     const secret = createOpaqueSecret()
-    store.createOrReuseEnvironment({
+    await store.createOrReuseEnvironment({
       ownerUserId: user.id,
       kind: environment.kind,
       machineName: environment.machineName,
@@ -326,12 +332,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
   })
 
   app.get('/v1/environments/:id/work/poll', async request => {
-    const environment = requireEnvironmentSecret(request)
-    const work = store.pollWork(environment.id)
+    const environment = await requireEnvironmentSecret(request)
+    const work = await store.pollWork(environment.id)
     if (!work) {
       return null
     }
-    const session = store.getSession(work.sessionId)
+    const session = await store.getSession(work.sessionId)
     if (!session) {
       throw app.httpErrors.notFound('Session not found for work item')
     }
@@ -352,13 +358,13 @@ export async function buildServer(options: BuildServerOptions = {}) {
 
   async function requireWorkToken(
     request: FastifyRequest,
-  ): Promise<{ workId: string; work: ReturnType<MemoryRelayStore['getWorkItem']> }> {
+  ): Promise<{ workId: string; work: Awaited<ReturnType<RelayStore['getWorkItem']>> }> {
     const token = readBearerToken(request)
     const { workId } = request.params as { workId: string }
     if (!token) {
       throw app.httpErrors.unauthorized('Missing work token')
     }
-    const work = store.validateWorkToken(workId, token)
+    const work = await store.validateWorkToken(workId, token)
     if (!work) {
       throw app.httpErrors.unauthorized('Invalid work token')
     }
@@ -367,26 +373,26 @@ export async function buildServer(options: BuildServerOptions = {}) {
 
   app.post('/v1/environments/:id/work/:workId/ack', async request => {
     const { workId, work } = await requireWorkToken(request)
-    store.claimWork(workId)
+    await store.claimWork(workId)
     return { ok: true, session_id: work?.sessionId }
   })
 
   app.post('/v1/environments/:id/work/:workId/stop', async request => {
     const { workId } = await requireWorkToken(request)
-    store.stopWork(workId)
+    await store.stopWork(workId)
     return { ok: true }
   })
 
   app.post('/v1/environments/:id/work/:workId/heartbeat', async request => {
     const { workId } = await requireWorkToken(request)
-    store.heartbeatWork(workId)
+    await store.heartbeatWork(workId)
     return { ok: true }
   })
 
   app.post('/v1/sessions', async request => {
     const user = await requireUser(request)
     const input = createSessionSchema.parse(request.body)
-    const session = store.createSession(user.id, input)
+    const session = await store.createSession(user.id, input)
     audit('session.create', { userId: user.id, sessionId: session.id })
     return { session }
   })
@@ -394,38 +400,38 @@ export async function buildServer(options: BuildServerOptions = {}) {
   app.get('/v1/sessions/:id', async request => {
     const user = await requireUser(request)
     const id = String((request.params as Record<string, string>).id)
-    const session = store.getSession(id)
+    const session = await store.getSession(id)
     if (!session || session.ownerUserId !== user.id) {
       throw app.httpErrors.notFound('Session not found')
     }
     return {
       session,
-      events: store.listEvents(id),
+      events: await store.listEvents(id),
     }
   })
 
   app.patch('/v1/sessions/:id', async request => {
     const user = await requireUser(request)
     const id = String((request.params as Record<string, string>).id)
-    const session = store.getSession(id)
+    const session = await store.getSession(id)
     if (!session || session.ownerUserId !== user.id) {
       throw app.httpErrors.notFound('Session not found')
     }
-    const updated = store.updateSession(id, updateSessionSchema.parse(request.body))
+    const updated = await store.updateSession(id, updateSessionSchema.parse(request.body))
     return { session: updated }
   })
 
   app.post('/v1/sessions/:id/archive', async request => {
     const id = String((request.params as Record<string, string>).id)
     const auth = await requireWorkerOrUserForSession(request, id)
-    const session = store.getSession(id)
+    const session = await store.getSession(id)
     if (!session) {
       throw app.httpErrors.notFound('Session not found')
     }
     if (auth.kind === 'user' && session.ownerUserId !== auth.user.id) {
       throw app.httpErrors.forbidden('Session ownership mismatch')
     }
-    const archived = store.archiveSession(id)
+    const archived = await store.archiveSession(id)
     audit('session.archive', { actor: auth.kind, sessionId: id })
     return { session: archived }
   })
@@ -434,14 +440,16 @@ export async function buildServer(options: BuildServerOptions = {}) {
     const id = String((request.params as Record<string, string>).id)
     const auth = await requireWorkerOrUserForSession(request, id)
     const input = appendSessionEventsSchema.parse(request.body)
-    const session = store.getSession(id)
+    const session = await store.getSession(id)
     if (!session) {
       throw app.httpErrors.notFound('Session not found')
     }
     if (auth.kind === 'user' && session.ownerUserId !== auth.user.id) {
       throw app.httpErrors.forbidden('Session ownership mismatch')
     }
-    const events = input.events.map(event => store.appendEvent(id, event.type, event.payload))
+    const events = await Promise.all(
+      input.events.map(event => store.appendEvent(id, event.type, event.payload)),
+    )
     return { events }
   })
 
@@ -464,7 +472,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       }
       try {
         const auth = await requireWorkerOrUserForSession(request, id)
-        const session = store.getSession(id)
+        const session = await store.getSession(id)
         if (!session) {
           socket.close(4001, 'session not found')
           return
@@ -473,13 +481,15 @@ export async function buildServer(options: BuildServerOptions = {}) {
           socket.close(4003, 'forbidden')
           return
         }
-        for (const event of store.listEvents(id, afterSeq)) {
+        for (const event of await store.listEvents(id, afterSeq)) {
           socket.send(JSON.stringify(event.payload ?? event))
         }
-        const unsubscribe = store.subscribe(id, (event: SessionEventEnvelope) => {
+        const unsubscribe = await store.subscribe(id, (event: SessionEventEnvelope) => {
           socket.send(JSON.stringify(event.payload ?? event))
         })
-        socket.on('close', unsubscribe)
+        socket.on('close', () => {
+          void Promise.resolve(unsubscribe())
+        })
       } catch (error) {
         logger.warn('websocket authorization failed', {
           sessionId: id,
@@ -493,15 +503,15 @@ export async function buildServer(options: BuildServerOptions = {}) {
   app.post('/v1/code/sessions', async request => {
     const user = await requireUser(request)
     const input = createCodeSessionSchema.parse(request.body)
-    const session = store.createCodeSession(user.id, input)
+    const session = await store.createCodeSession(user.id, input)
     const environmentId = input.environment_id
     if (environmentId) {
-      const environment = store.getEnvironment(environmentId)
+      const environment = await store.getEnvironment(environmentId)
       if (!environment || environment.ownerUserId !== user.id) {
         throw app.httpErrors.notFound('Environment not found')
       }
       const workToken = createOpaqueSecret()
-      store.createWorkItem(
+      await store.createWorkItem(
         environment.id,
         session.id,
         workToken,
@@ -549,7 +559,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
   app.post('/v1/code/sessions/:id/bridge', async request => {
     const user = await requireUser(request)
     const id = String((request.params as Record<string, string>).id)
-    const session = store.getSession(id)
+    const session = await store.getSession(id)
     if (!session || session.ownerUserId !== user.id) {
       throw app.httpErrors.notFound('Session not found')
     }
@@ -557,7 +567,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     return {
       session_id: id,
       worker_token: worker.token,
-      worker_epoch: store.getSession(id)!.workerEpoch,
+      worker_epoch: (await store.getSession(id))!.workerEpoch,
       websocket_url: `${config.baseUrl.replace('http', 'ws')}/v1/sessions/ws/${id}/subscribe`,
       expires_in: worker.expiresIn,
     }
@@ -570,7 +580,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       throw app.httpErrors.forbidden('Worker token required')
     }
     const workerEpoch = Number(auth.payload.worker_epoch)
-    const credential = store.connectWorker(id, workerEpoch)
+    const credential = await store.connectWorker(id, workerEpoch)
     if (!credential) {
       throw app.httpErrors.unauthorized('Worker credential is stale')
     }
@@ -596,6 +606,10 @@ export async function buildServer(options: BuildServerOptions = {}) {
       error: statusCode >= 500 ? 'internal_error' : 'request_error',
       message: error instanceof Error ? error.message : String(error),
     })
+  })
+
+  app.addHook('onClose', async () => {
+    await store.close()
   })
 
   return { app, store, tokenService, config }
