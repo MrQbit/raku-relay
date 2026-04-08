@@ -12,6 +12,7 @@ enforcement.
 - Mobile
 
 ## Required V1 Endpoints
+- `GET /v1/me`
 - `POST /v1/environments/bridge`
 - `GET /v1/environments/{id}/work/poll`
 - `POST /v1/environments/{id}/work/{workId}/ack`
@@ -20,10 +21,17 @@ enforcement.
 - `DELETE /v1/environments/bridge/{id}`
 - `POST /v1/environments/{id}/bridge/reconnect`
 - `POST /v1/sessions`
+- `GET /v1/sessions`
 - `GET /v1/sessions/{id}`
 - `PATCH /v1/sessions/{id}`
 - `POST /v1/sessions/{id}/archive`
+- `POST /v1/sessions/{id}/control`
+- `POST /v1/sessions/{id}/reply`
 - `POST /v1/sessions/{id}/events`
+- `GET /v1/environments`
+- `GET /v1/environments/{id}`
+- `GET /v1/trusted-devices`
+- `DELETE /v1/trusted-devices/{id}`
 - `WS /v1/sessions/ws/{id}/subscribe`
 - `POST /v1/code/sessions`
 - `POST /v1/code/sessions/{id}/bridge`
@@ -79,6 +87,17 @@ Canonical storage:
 - Heartbeats extend worker liveness.
 - Session archive persists tail state and ends the active lease.
 
+## App-Facing Session Contract
+- Session lists must support filtering by status, environment, and recency.
+- Environment summaries must expose whether the target is `local_bridge` or
+  `raku_cloud`.
+- Session control must support `cancel`, `stop`, `archive`, and
+  `reconnect_worker`.
+- Session replies must support pending permission prompts and other user-input
+  requests from browser or mobile clients.
+- Websocket session updates must remain the live event channel for active
+  sessions.
+
 ## Security
 - TLS for public HTTP and WebSocket endpoints
 - Relay-side ownership checks on all session reads/writes
@@ -92,4 +111,3 @@ The relay must not require:
 - `claude.ai` redirect assumptions
 - `anthropic-version`
 - `anthropic-beta`
-

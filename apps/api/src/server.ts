@@ -1,4 +1,5 @@
 import Fastify, { type FastifyRequest } from 'fastify'
+import cors from '@fastify/cors'
 import sensible from '@fastify/sensible'
 import websocket from '@fastify/websocket'
 import { randomUUID } from 'crypto'
@@ -8,6 +9,8 @@ import {
   authExchangeSchema,
   createCodeSessionSchema,
   createSessionSchema,
+  sessionControlSchema,
+  sessionReplySchema,
   refreshTokenSchema,
   registerEnvironmentSchema,
   trustedDeviceRequestSchema,
@@ -46,6 +49,15 @@ function readBearerToken(request: FastifyRequest): string | undefined {
   return header.slice('Bearer '.length)
 }
 
+function readSessionAccessToken(request: FastifyRequest): string | undefined {
+  const bearer = readBearerToken(request)
+  if (bearer) {
+    return bearer
+  }
+  const query = request.query as Record<string, string | undefined>
+  return query.access_token
+}
+
 export async function buildServer(options: BuildServerOptions = {}) {
   const config = options.config ?? loadConfig()
   const store =
@@ -81,6 +93,16 @@ export async function buildServer(options: BuildServerOptions = {}) {
   const launcher = new RunnerLauncher(config)
 
   const app = Fastify({ logger: false })
+  await app.register(cors, {
+    origin: (origin, callback) => {
+      if (!origin || config.allowedOrigins.includes(origin)) {
+        callback(null, true)
+        return
+      }
+      callback(new Error('Origin not allowed'), false)
+    },
+    credentials: false,
+  })
   await app.register(sensible)
   await app.register(websocket)
 
@@ -131,7 +153,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     request: FastifyRequest,
     sessionId: string,
   ) {
-    const token = readBearerToken(request)
+    const token = readSessionAccessToken(request)
     if (!token) {
       throw app.httpErrors.unauthorized('Missing bearer token')
     }
@@ -172,6 +194,21 @@ export async function buildServer(options: BuildServerOptions = {}) {
   app.get('/healthz', async () => ({ ok: true }))
   app.get('/readyz', async () => ({ ok: true, storage_backend: config.storageBackend }))
   app.get('/.well-known/jwks.json', async () => publicJwks)
+
+  app.get('/v1/me', async request => {
+    const user = await requireUser(request, { skipTrustedDevice: true })
+    return {
+      user: {
+        id: user.id,
+        tenant_id: user.tenantId,
+        email: user.email,
+        display_name: user.displayName,
+      },
+      features: {
+        trusted_device_required: config.requireTrustedDevice,
+      },
+    }
+  })
 
   app.post('/v1/auth/azure/exchange', async request => {
     const input = authExchangeSchema.parse(request.body)
@@ -265,6 +302,32 @@ export async function buildServer(options: BuildServerOptions = {}) {
     }
   })
 
+  app.get('/v1/trusted-devices', async request => {
+    const user = await requireUser(request, { skipTrustedDevice: true })
+    const devices = await store.listTrustedDevicesForUser(user.id)
+    return {
+      trusted_devices: devices.map(device => ({
+        id: device.id,
+        label: device.label,
+        expires_at: new Date(device.expiresAt).toISOString(),
+        last_used_at:
+          device.lastUsedAt !== undefined
+            ? new Date(device.lastUsedAt).toISOString()
+            : undefined,
+      })),
+    }
+  })
+
+  app.delete('/v1/trusted-devices/:id', async request => {
+    const user = await requireUser(request, { skipTrustedDevice: true })
+    const id = String((request.params as Record<string, string>).id)
+    const deleted = await store.deleteTrustedDevice(user.id, id)
+    if (!deleted) {
+      throw app.httpErrors.notFound('Trusted device not found')
+    }
+    return { ok: true }
+  })
+
   app.post('/v1/environments/bridge', async request => {
     const user = await requireUser(request)
     const input = registerEnvironmentSchema.parse(request.body)
@@ -302,6 +365,26 @@ export async function buildServer(options: BuildServerOptions = {}) {
     await store.archiveEnvironment(id)
     audit('environment.archive', { userId: user.id, environmentId: id })
     return { ok: true }
+  })
+
+  app.get('/v1/environments', async request => {
+    const user = await requireUser(request)
+    const environments = await store.listEnvironmentsForUser(user.id)
+    return {
+      environments: environments.map(environmentSummary),
+    }
+  })
+
+  app.get('/v1/environments/:id', async request => {
+    const user = await requireUser(request)
+    const id = String((request.params as Record<string, string>).id)
+    const environment = await store.getEnvironment(id)
+    if (!environment || environment.ownerUserId !== user.id) {
+      throw app.httpErrors.notFound('Environment not found')
+    }
+    return {
+      environment: environmentSummary(environment),
+    }
   })
 
   app.post('/v1/environments/:id/bridge/reconnect', async request => {
@@ -397,6 +480,30 @@ export async function buildServer(options: BuildServerOptions = {}) {
     return { session }
   })
 
+  app.get('/v1/sessions', async request => {
+    const user = await requireUser(request)
+    const query = request.query as Record<string, string | undefined>
+    const status = query.status
+      ? query.status
+          .split(',')
+          .map(value => value.trim())
+          .filter(Boolean) as SessionRecord['status'][]
+      : undefined
+    const recencyDays =
+      query.recency_days !== undefined ? Number(query.recency_days) : undefined
+    const sessions = await store.listSessionsForUser(user.id, {
+      status,
+      environmentId: query.environment_id,
+      recencyDays:
+        recencyDays !== undefined && Number.isFinite(recencyDays)
+          ? recencyDays
+          : undefined,
+    })
+    return {
+      sessions: sessions.map(sessionSummary),
+    }
+  })
+
   app.get('/v1/sessions/:id', async request => {
     const user = await requireUser(request)
     const id = String((request.params as Record<string, string>).id)
@@ -434,6 +541,77 @@ export async function buildServer(options: BuildServerOptions = {}) {
     const archived = await store.archiveSession(id)
     audit('session.archive', { actor: auth.kind, sessionId: id })
     return { session: archived }
+  })
+
+  app.post('/v1/sessions/:id/control', async request => {
+    const id = String((request.params as Record<string, string>).id)
+    const user = await requireUser(request)
+    const session = await store.getSession(id)
+    if (!session || session.ownerUserId !== user.id) {
+      throw app.httpErrors.notFound('Session not found')
+    }
+    const input = sessionControlSchema.parse(request.body)
+    let updated = session
+    if (input.action === 'archive') {
+      updated = (await store.archiveSession(id)) ?? session
+    } else if (input.action === 'cancel' || input.action === 'stop') {
+      updated =
+        (await store.updateSession(id, {
+          status: 'failed',
+          metadata: {
+            last_control_action: input.action,
+            last_control_payload: input.payload ?? null,
+            last_control_at: new Date().toISOString(),
+          },
+        })) ?? session
+    } else if (input.action === 'reconnect_worker') {
+      updated =
+        (await store.updateSession(id, {
+          metadata: {
+            last_control_action: input.action,
+            last_control_payload: input.payload ?? null,
+            last_control_at: new Date().toISOString(),
+          },
+        })) ?? session
+    }
+    const event = await store.appendEvent('' + id, 'session.control', {
+      type: 'session.control',
+      action: input.action,
+      payload: input.payload ?? null,
+      actor_user_id: user.id,
+    })
+    audit('session.control', {
+      userId: user.id,
+      sessionId: id,
+      action: input.action,
+    })
+    return {
+      session: sessionSummary(updated),
+      event,
+    }
+  })
+
+  app.post('/v1/sessions/:id/reply', async request => {
+    const id = String((request.params as Record<string, string>).id)
+    const user = await requireUser(request)
+    const session = await store.getSession(id)
+    if (!session || session.ownerUserId !== user.id) {
+      throw app.httpErrors.notFound('Session not found')
+    }
+    const input = sessionReplySchema.parse(request.body)
+    const event = await store.appendEvent(id, 'session.reply', {
+      type: 'session.reply',
+      prompt_id: input.prompt_id,
+      reply: input.reply,
+      metadata: input.metadata ?? null,
+      actor_user_id: user.id,
+    })
+    audit('session.reply', {
+      userId: user.id,
+      sessionId: id,
+      promptId: input.prompt_id,
+    })
+    return { ok: true, event }
   })
 
   app.post('/v1/sessions/:id/events', async request => {
@@ -624,5 +802,31 @@ export function sessionSummary(session: SessionRecord) {
     worker_epoch: session.workerEpoch,
     created_at: session.createdAt,
     updated_at: session.updatedAt,
+  }
+}
+
+export function environmentSummary(environment: {
+  id: string
+  kind: string
+  machineName: string
+  directory: string
+  branch?: string
+  gitRepoUrl?: string
+  maxSessions: number
+  archivedAt?: string
+  createdAt: string
+  updatedAt: string
+}) {
+  return {
+    id: environment.id,
+    kind: environment.kind,
+    machine_name: environment.machineName,
+    directory: environment.directory,
+    branch: environment.branch,
+    git_repo_url: environment.gitRepoUrl,
+    max_sessions: environment.maxSessions,
+    archived_at: environment.archivedAt,
+    created_at: environment.createdAt,
+    updated_at: environment.updatedAt,
   }
 }

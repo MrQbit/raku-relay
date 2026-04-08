@@ -26,6 +26,7 @@
     "typescript": "^5.9.2"
   },
   "dependencies": {
+    "@fastify/cors": "^11.1.0",
     "@fastify/sensible": "^6.0.3",
     "@fastify/websocket": "^11.2.0",
     "drizzle-orm": "^0.44.5",

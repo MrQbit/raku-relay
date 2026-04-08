@@ -16,6 +16,7 @@ const envSchema = z.object({
   RAKU_OIDC_REDIRECT_URIS: z.string().default(''),
   RAKU_OIDC_SUCCESS_URL: z.string().url(),
   RAKU_OIDC_LOGOUT_URL: z.string().url(),
+  RAKU_ALLOWED_ORIGINS: z.string().default('http://localhost:3000,http://localhost:4000,https://app.raku.app,https://raku.app'),
   RAKU_POSTGRES_URL: z.string().min(1),
   RAKU_REDIS_URL: z.string().min(1),
   RAKU_AZURITE_BLOB_URL: z.string().optional(),
@@ -52,6 +53,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       successUrl: parsed.RAKU_OIDC_SUCCESS_URL,
       logoutUrl: parsed.RAKU_OIDC_LOGOUT_URL,
     },
+    allowedOrigins: parsed.RAKU_ALLOWED_ORIGINS.split(',')
+      .map(value => value.trim())
+      .filter(Boolean),
     postgresUrl: parsed.RAKU_POSTGRES_URL,
     redisUrl: parsed.RAKU_REDIS_URL,
     azuriteBlobUrl: parsed.RAKU_AZURITE_BLOB_URL,

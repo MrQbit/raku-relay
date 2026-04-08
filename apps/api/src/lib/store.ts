@@ -124,10 +124,13 @@ export interface RelayStore {
     expiresAt: number,
   ): Promise<TrustedDeviceRecord>
   validateTrustedDevice(userId: string, token: string): Promise<boolean>
+  listTrustedDevicesForUser(userId: string): Promise<TrustedDeviceRecord[]>
+  deleteTrustedDevice(userId: string, trustedDeviceId: string): Promise<boolean>
   createOrReuseEnvironment(
     input: EnvironmentUpsertInput,
   ): Promise<EnvironmentRecord>
   getEnvironment(id: string): Promise<EnvironmentRecord | undefined>
+  listEnvironmentsForUser(userId: string): Promise<EnvironmentRecord[]>
   validateEnvironmentSecret(
     id: string,
     token: string,
@@ -142,6 +145,14 @@ export interface RelayStore {
     input: CreateCodeSessionInput,
   ): Promise<SessionRecord>
   getSession(id: string): Promise<SessionRecord | undefined>
+  listSessionsForUser(
+    userId: string,
+    filters?: {
+      status?: SessionStatus[]
+      environmentId?: string
+      recencyDays?: number
+    },
+  ): Promise<SessionRecord[]>
   updateSession(
     sessionId: string,
     input: UpdateSessionInput,
@@ -307,6 +318,27 @@ export class MemoryRelayStore implements RelayStore {
     return true
   }
 
+  async listTrustedDevicesForUser(
+    userId: string,
+  ): Promise<TrustedDeviceRecord[]> {
+    return [...this.trustedDevices.values()]
+      .filter(record => record.userId === userId)
+      .sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))
+  }
+
+  async deleteTrustedDevice(
+    userId: string,
+    trustedDeviceId: string,
+  ): Promise<boolean> {
+    for (const [tokenHash, record] of this.trustedDevices.entries()) {
+      if (record.userId === userId && record.id === trustedDeviceId) {
+        this.trustedDevices.delete(tokenHash)
+        return true
+      }
+    }
+    return false
+  }
+
   async createOrReuseEnvironment(
     input: EnvironmentUpsertInput,
   ): Promise<EnvironmentRecord> {
@@ -349,6 +381,12 @@ export class MemoryRelayStore implements RelayStore {
 
   async getEnvironment(id: string): Promise<EnvironmentRecord | undefined> {
     return this.environments.get(id)
+  }
+
+  async listEnvironmentsForUser(userId: string): Promise<EnvironmentRecord[]> {
+    return [...this.environments.values()]
+      .filter(environment => environment.ownerUserId === userId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
   async validateEnvironmentSecret(
@@ -427,6 +465,34 @@ export class MemoryRelayStore implements RelayStore {
 
   async getSession(id: string): Promise<SessionRecord | undefined> {
     return this.sessions.get(id)
+  }
+
+  async listSessionsForUser(
+    userId: string,
+    filters?: {
+      status?: SessionStatus[]
+      environmentId?: string
+      recencyDays?: number
+    },
+  ): Promise<SessionRecord[]> {
+    const recencyCutoff =
+      filters?.recencyDays !== undefined
+        ? Date.now() - filters.recencyDays * 24 * 60 * 60 * 1000
+        : undefined
+    return [...this.sessions.values()]
+      .filter(session => session.ownerUserId === userId)
+      .filter(session =>
+        filters?.status?.length ? filters.status.includes(session.status) : true,
+      )
+      .filter(session =>
+        filters?.environmentId ? session.environmentId === filters.environmentId : true,
+      )
+      .filter(session =>
+        recencyCutoff !== undefined
+          ? new Date(session.updatedAt).getTime() >= recencyCutoff
+          : true,
+      )
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
   async updateSession(

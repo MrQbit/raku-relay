@@ -1,8 +1,9 @@
 # raku-relay
 
 `raku-relay` is the first-party backend for RAKU Remote Control. It provides
-relay-owned auth, bridge environments, live session streaming, worker token
-issuance, and the control-plane pieces needed for cloud runners.
+relay-owned auth, bridge environments, durable session state, live session
+streaming, worker token issuance, and the control-plane pieces needed for web,
+mobile, local bridge, and cloud runner clients.
 
 ## Workspace Layout
 
@@ -24,6 +25,13 @@ issuance, and the control-plane pieces needed for cloud runners.
 3. `bun run dev:api`
 4. In another shell, run `bun run test`
 
+For durable local development:
+
+1. `docker compose -f docker/compose.yml up -d`
+2. `bun run db:migrate:psql`
+3. Set `RAKU_STORAGE_BACKEND=postgres` in `.env`
+4. `bun run dev:api`
+
 ## Key Docs
 
 - [howto.md](./howto.md)
@@ -40,3 +48,4 @@ issuance, and the control-plane pieces needed for cloud runners.
 - `bun run build`
 - `bun run typecheck`
 - `bun run test`
+- `bun run verify`

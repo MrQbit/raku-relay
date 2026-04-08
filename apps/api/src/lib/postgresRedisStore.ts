@@ -6,6 +6,7 @@ import type {
   CreateCodeSessionInput,
   CreateSessionInput,
   SessionEventEnvelope,
+  SessionStatus,
   UpdateSessionInput,
 } from '@raku-relay/contracts'
 import {
@@ -396,6 +397,30 @@ export class PostgresRedisRelayStore implements RelayStore {
     return Boolean(rows[0])
   }
 
+  async listTrustedDevicesForUser(
+    userId: string,
+  ): Promise<TrustedDeviceRecord[]> {
+    const rows = await this.sql<TrustedDeviceRow[]>`
+      select id, user_id, label, token_hash, expires_at, last_used_at
+      from trusted_devices
+      where user_id = ${userId}
+      order by last_used_at desc nulls last, created_at desc
+    `
+    return rows.map(mapTrustedDevice)
+  }
+
+  async deleteTrustedDevice(
+    userId: string,
+    trustedDeviceId: string,
+  ): Promise<boolean> {
+    const rows = await this.sql<{ id: string }[]>`
+      delete from trusted_devices
+      where user_id = ${userId} and id = ${trustedDeviceId}
+      returning id
+    `
+    return Boolean(rows[0])
+  }
+
   async createOrReuseEnvironment(
     input: EnvironmentUpsertInput,
   ): Promise<EnvironmentRecord> {
@@ -444,6 +469,17 @@ export class PostgresRedisRelayStore implements RelayStore {
       limit 1
     `
     return rows[0] ? mapEnvironment(rows[0]) : undefined
+  }
+
+  async listEnvironmentsForUser(userId: string): Promise<EnvironmentRecord[]> {
+    const rows = await this.sql<EnvironmentRow[]>`
+      select id, owner_user_id, kind, machine_name, directory, branch, git_repo_url,
+        max_sessions, metadata, created_at, updated_at, archived_at, secret_hash
+      from environments
+      where owner_user_id = ${userId}
+      order by updated_at desc
+    `
+    return rows.map(mapEnvironment)
   }
 
   async validateEnvironmentSecret(
@@ -532,6 +568,40 @@ export class PostgresRedisRelayStore implements RelayStore {
       limit 1
     `
     return rows[0] ? mapSession(rows[0]) : undefined
+  }
+
+  async listSessionsForUser(
+    userId: string,
+    filters?: {
+      status?: SessionStatus[]
+      environmentId?: string
+      recencyDays?: number
+    },
+  ): Promise<SessionRecord[]> {
+    const rows = await this.sql<SessionRow[]>`
+      select id, owner_user_id, environment_id, title, status, metadata, worker_epoch,
+        last_event_seq, created_at, updated_at, archived_at
+      from sessions
+      where owner_user_id = ${userId}
+      order by updated_at desc
+    `
+    const recencyCutoff =
+      filters?.recencyDays !== undefined
+        ? Date.now() - filters.recencyDays * 24 * 60 * 60 * 1000
+        : undefined
+    return rows
+      .map(mapSession)
+      .filter(session =>
+        filters?.status?.length ? filters.status.includes(session.status) : true,
+      )
+      .filter(session =>
+        filters?.environmentId ? session.environmentId === filters.environmentId : true,
+      )
+      .filter(session =>
+        recencyCutoff !== undefined
+          ? new Date(session.updatedAt).getTime() >= recencyCutoff
+          : true,
+      )
   }
 
   async updateSession(

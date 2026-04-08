@@ -26,6 +26,7 @@ async function createFixture(requireTrustedDevice = false) {
       successUrl: 'http://localhost/success',
       logoutUrl: 'http://localhost/logout',
     },
+    allowedOrigins: ['http://localhost:3000'],
     postgresUrl: 'postgres://unused',
     redisUrl: 'redis://unused',
     redisChannelPrefix: 'test-relay',
@@ -170,5 +171,98 @@ describe('relay api', () => {
       },
     })
     expect(allowed.statusCode).toBe(200)
+  })
+
+  test('supports profile, list, control, reply, and trusted device management endpoints', async () => {
+    const { app, azureToken } = await createFixture()
+    const exchange = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/azure/exchange',
+      payload: { id_token: azureToken },
+    })
+    const auth = await exchange.json()
+    const accessToken = auth.access_token as string
+
+    const me = await app.inject({
+      method: 'GET',
+      url: '/v1/me',
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    expect(me.statusCode).toBe(200)
+    const meJson = await me.json()
+    expect(meJson.user.email).toBe('martin@example.com')
+
+    const trusted = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/trusted-devices',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { label: 'Browser session' },
+    })
+    expect(trusted.statusCode).toBe(200)
+
+    const devices = await app.inject({
+      method: 'GET',
+      url: '/v1/trusted-devices',
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    expect(devices.statusCode).toBe(200)
+    const devicesJson = await devices.json()
+    expect(devicesJson.trusted_devices).toHaveLength(1)
+
+    const createSession = await app.inject({
+      method: 'POST',
+      url: '/v1/sessions',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { title: 'Web session' },
+    })
+    expect(createSession.statusCode).toBe(200)
+    const sessionJson = await createSession.json()
+    const sessionId = sessionJson.session.id as string
+
+    const listSessions = await app.inject({
+      method: 'GET',
+      url: '/v1/sessions',
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    expect(listSessions.statusCode).toBe(200)
+    const listJson = await listSessions.json()
+    expect(listJson.sessions).toHaveLength(1)
+
+    const control = await app.inject({
+      method: 'POST',
+      url: `/v1/sessions/${sessionId}/control`,
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { action: 'stop' },
+    })
+    expect(control.statusCode).toBe(200)
+    const controlJson = await control.json()
+    expect(controlJson.session.status).toBe('failed')
+
+    const reply = await app.inject({
+      method: 'POST',
+      url: `/v1/sessions/${sessionId}/reply`,
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: {
+        prompt_id: 'prompt-1',
+        reply: 'allow',
+      },
+    })
+    expect(reply.statusCode).toBe(200)
+
+    const sessionDetail = await app.inject({
+      method: 'GET',
+      url: `/v1/sessions/${sessionId}`,
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    expect(sessionDetail.statusCode).toBe(200)
+    const detailJson = await sessionDetail.json()
+    expect(detailJson.events).toHaveLength(2)
+
+    const deleteTrusted = await app.inject({
+      method: 'DELETE',
+      url: `/v1/trusted-devices/${devicesJson.trusted_devices[0].id}`,
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    expect(deleteTrusted.statusCode).toBe(200)
   })
 })

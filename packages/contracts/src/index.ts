@@ -132,6 +132,65 @@ export const relayAuthResponseSchema = z.object({
 })
 export type RelayAuthResponse = z.infer<typeof relayAuthResponseSchema>
 
+export const sessionSummarySchema = z.object({
+  id: z.string(),
+  title: z.string().nullable(),
+  status: sessionStatusSchema,
+  environment_id: z.string().optional(),
+  worker_epoch: z.number().int().nonnegative(),
+  created_at: z.string(),
+  updated_at: z.string(),
+})
+export type SessionSummary = z.infer<typeof sessionSummarySchema>
+
+export const environmentSummarySchema = z.object({
+  id: z.string(),
+  kind: environmentKindSchema,
+  machine_name: z.string(),
+  directory: z.string(),
+  branch: z.string().optional(),
+  git_repo_url: z.string().optional(),
+  max_sessions: z.number().int().positive(),
+  archived_at: z.string().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+})
+export type EnvironmentSummary = z.infer<typeof environmentSummarySchema>
+
+export const trustedDeviceSummarySchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  expires_at: z.string(),
+  last_used_at: z.string().optional(),
+})
+export type TrustedDeviceSummary = z.infer<typeof trustedDeviceSummarySchema>
+
+export const relayMeSchema = z.object({
+  user: z.object({
+    id: z.string(),
+    tenant_id: z.string(),
+    email: z.string().nullable(),
+    display_name: z.string().nullable(),
+  }),
+  features: z.object({
+    trusted_device_required: z.boolean(),
+  }),
+})
+export type RelayMe = z.infer<typeof relayMeSchema>
+
+export const sessionControlSchema = z.object({
+  action: z.enum(['cancel', 'stop', 'archive', 'reconnect_worker']),
+  payload: z.record(z.string(), z.unknown()).optional(),
+})
+export type SessionControlInput = z.infer<typeof sessionControlSchema>
+
+export const sessionReplySchema = z.object({
+  prompt_id: z.string().min(1),
+  reply: z.string().min(1),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+})
+export type SessionReplyInput = z.infer<typeof sessionReplySchema>
+
 export type RelayClaims = {
   sub: string
   tenant_id: string
@@ -146,4 +205,3 @@ export type WorkerClaims = {
   worker_epoch: number
   role: 'worker'
 }
-

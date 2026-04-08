@@ -23,6 +23,8 @@ In practice that means the relay:
 - lets a local CLI environment register itself and poll for work
 - lets a cloud runner connect with a worker token and stream session events
 - provides websocket fanout so multiple clients can observe the same session
+- exposes app-facing APIs for web and mobile session lists, environment lists,
+  control actions, trusted devices, and session replies
 
 ## What It Is Not For
 `raku-relay` is not:
@@ -32,9 +34,17 @@ In practice that means the relay:
 - a mobile app
 - a secret manager for arbitrary third-party applications
 - a multi-tenant business workflow engine
+- a replacement for the direct runtime server used by dedicated integrations
 
 The relay coordinates sessions and workers. It does not itself replace the
 agent logic that runs inside the CLI or runner process.
+
+## Which Client Uses Which Backend
+
+- `raku-web`, `raku-android`, and `raku-ios` use `raku-relay`
+- the RAKU CLI uses `raku-relay` for Remote Control features
+- the direct runtime server remains a separate interface for dedicated or
+  custom integrations and is not the standard browser/mobile transport
 
 ## Core Use Cases
 
@@ -179,11 +189,21 @@ Use this for real deployments. In the current codebase this means:
 
 ## API Surface
 
-Current core endpoints:
+Current auth and app-facing endpoints:
+- `GET /v1/me`
 - `POST /v1/auth/azure/exchange`
 - `POST /v1/auth/refresh`
 - `POST /v1/auth/logout`
 - `POST /v1/auth/trusted-devices`
+- `GET /v1/trusted-devices`
+- `DELETE /v1/trusted-devices/{id}`
+- `GET /v1/environments`
+- `GET /v1/environments/{id}`
+- `GET /v1/sessions`
+- `POST /v1/sessions/{id}/control`
+- `POST /v1/sessions/{id}/reply`
+
+Current bridge and execution endpoints:
 - `POST /v1/environments/bridge`
 - `GET /v1/environments/{id}/work/poll`
 - `POST /v1/environments/{id}/work/{workId}/ack`
@@ -198,6 +218,41 @@ Current core endpoints:
 - `POST /v1/code/sessions`
 - `POST /v1/code/sessions/{id}/bridge`
 - `POST /v1/code/sessions/{id}/worker/connect`
+
+## App-Facing Session Model
+
+The browser and mobile clients use the relay in three ways:
+
+1. list the current user, sessions, environments, and trusted devices
+2. mutate sessions through control and reply endpoints
+3. subscribe to live session updates over websocket
+
+Typical browser or mobile flow:
+
+```mermaid
+sequenceDiagram
+  participant App as "RAKU Client App"
+  participant Relay as "raku-relay"
+
+  App->>Relay: GET /v1/me
+  App->>Relay: GET /v1/sessions
+  App->>Relay: GET /v1/environments
+  App->>Relay: WS /v1/sessions/ws/{id}/subscribe
+  App->>Relay: POST /v1/sessions/{id}/control
+  App->>Relay: POST /v1/sessions/{id}/reply
+  Relay-->>App: live session events and updated state
+```
+
+Supported list filters today:
+- `GET /v1/sessions?status=queued,active`
+- `GET /v1/sessions?environment_id=...`
+- `GET /v1/sessions?recency_days=7`
+
+Supported control actions today:
+- `cancel`
+- `stop`
+- `archive`
+- `reconnect_worker`
 
 ## Local Deployment
 
